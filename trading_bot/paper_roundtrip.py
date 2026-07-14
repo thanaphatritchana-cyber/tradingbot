@@ -28,8 +28,6 @@ def validate_paper_safety(cfg: Settings) -> list[str]:
         errors.append("IBKR_READ_ONLY must be false")
     if not cfg.kill_switch:
         errors.append("KILL_SWITCH must remain true for the isolated test")
-    if cfg.max_order_notional < 500:
-        errors.append("MAX_ORDER_NOTIONAL is too low for one AAPL share")
     return errors
 
 
@@ -50,14 +48,19 @@ def run() -> int:
     if eastern_now.weekday() >= 5 or not clock_time(9, 35) <= eastern_now.time() <= clock_time(15, 45):
         raise RuntimeError(f"Refusing outside US regular test window: {eastern_now.isoformat()}")
 
-    store = Store(cfg.database_url)
+    store = Store(
+        cfg.database_url, cfg.estimated_exchange_fee_rate,
+        cfg.estimated_fx_cost_rate, cfg.tax_rate,
+    )
     notifier = LineNotifier(cfg.line_channel_access_token, cfg.line_target_id, store=store)
     state_key = f"paper_roundtrip_{eastern_now.date().isoformat()}"
     if store.get_state(state_key) == "completed":
         log.info("Paper round-trip already completed today")
         return 0
 
-    symbol = cfg.symbol_list[0]
+    symbol = cfg.normalized_paper_test_symbol
+    if not symbol:
+        raise RuntimeError("PAPER_TEST_SYMBOL is required")
     initial_qty = 0.0
     broker = None
     try:
@@ -65,13 +68,32 @@ def run() -> int:
             cfg.ibkr_host, cfg.ibkr_port, cfg.ibkr_client_id + 200,
             cfg.ibkr_account, cfg.ibkr_exchange, cfg.ibkr_currency,
             cfg.ibkr_primary_exchange, False, max(60, cfg.ibkr_order_timeout_seconds),
-            cfg.ibkr_market_data_type, True, cfg.ibkr_entry_limit_offset_pct, store,
+            cfg.ibkr_market_data_type, cfg.max_market_data_age_seconds,
+            True, cfg.ibkr_entry_limit_offset_pct, store,
+            trade_purpose="connectivity_test",
         )
         initial_qty, _ = broker.position(symbol)
         if initial_qty != 0:
             raise RuntimeError(f"Refusing test: existing {symbol} position is {initial_qty:g}")
-        quote = broker.current_quote(symbol)
-        reference = quote["ask"] or quote["market"] or quote["last"]
+        try:
+            quote = broker.current_quote(symbol)
+            reference = quote["ask"] or quote["market"] or quote["last"]
+        except RuntimeError as exc:
+            if "No current market quote" not in str(exc):
+                raise
+            # A one-day intraday request can return no bars on Paper HMDS.
+            # Five trading days of hourly bars is the smallest reliable
+            # fallback observed for this account.
+            history = broker.history(symbol, 5, "1h")
+            if history is None or history.empty:
+                raise RuntimeError(
+                    f"No current or historical IBKR Paper price for {symbol}"
+                ) from exc
+            reference = float(history["Close"].iloc[-1])
+            log.warning(
+                "Paper-only quote fallback: using latest IBKR historical close %.4f for %s",
+                reference, symbol,
+            )
         if reference <= 0 or reference > cfg.max_order_notional:
             raise RuntimeError(
                 f"One {symbol} share at {reference:.2f} exceeds MAX_ORDER_NOTIONAL"
@@ -82,6 +104,7 @@ def run() -> int:
             symbol, 1, reference, 1.0,
             reference * (1 + cfg.ibkr_entry_limit_offset_pct) * (1 - cfg.stop_loss_pct),
             reference * (1 + cfg.ibkr_entry_limit_offset_pct) * (1 + cfg.take_profit_pct),
+            cfg.trailing_stop_pct,
         )
         notifier.send(
             f"✅ PAPER BUY Fill {symbol}\n"

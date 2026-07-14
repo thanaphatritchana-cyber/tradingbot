@@ -22,6 +22,8 @@ from .storage import Store
 ROOT = Path(__file__).resolve().parent.parent
 PID_PATH = ROOT / ".line_controller.pid"
 STOP_PATH = ROOT / ".line_controller.stop"
+BOT_EXPECTED_PATH = ROOT / ".trading_bot.expected"
+BOT_HEARTBEAT_PATH = ROOT / ".trading_bot.heartbeat"
 MAX_BODY_BYTES = 1_000_000
 MAX_COMMANDS_PER_MINUTE = 6
 
@@ -39,7 +41,10 @@ class WebhookGuard:
         self.lock = threading.Lock()
         self.persistent_claim = persistent_claim
 
-    def accept(self, event_id: str, now: float | None = None) -> bool:
+    def accept(
+        self, event_id: str, now: float | None = None,
+        enforce_rate_limit: bool = True,
+    ) -> bool:
         now = time.monotonic() if now is None else now
         with self.lock:
             if event_id and event_id in self.seen:
@@ -48,9 +53,10 @@ class WebhookGuard:
                 return False
             while self.recent and now - self.recent[0] >= 60:
                 self.recent.popleft()
-            if len(self.recent) >= self.limit:
+            if enforce_rate_limit and len(self.recent) >= self.limit:
                 return False
-            self.recent.append(now)
+            if enforce_rate_limit:
+                self.recent.append(now)
             if event_id:
                 self.seen.add(event_id)
                 self.seen_order.append(event_id)
@@ -108,10 +114,12 @@ def execute_command(command: str) -> str:
     if command == "start_live":
         if not live_mode:
             return "บัญชีปัจจุบันไม่ใช่ Live; ใช้คำสั่ง 'เริ่ม'"
+        if not control.consume_live_arm():
+            return "Live start denied: run 'python -m trading_bot.control arm-live' locally first"
         result = control.start()
         return "เริ่ม TradingBot LIVE แล้ว" if result == 0 else "เริ่ม TradingBot LIVE ไม่สำเร็จ กรุณาตรวจ log"
     if command == "stop":
-        result = control.stop()
+        result = control.request_stop()
         if result == 0:
             return (
                 "หยุดโปรแกรม TradingBot แล้ว\n"
@@ -163,24 +171,47 @@ def make_handler(cfg: Settings, notifier: LineNotifier, event_store: Store | Non
             except (UnicodeDecodeError, json.JSONDecodeError):
                 self.send_error(400)
                 return
-            accepted_events = []
+            accepted_commands = []
             for event in payload.get("events", []):
+                commands = extract_commands(
+                    {"events": [event]}, cfg.line_control_user_id,
+                )
+                if not commands:
+                    continue
+                command = commands[0]
                 event_id = str(event.get("webhookEventId", "") or "")
+                if not event_id:
+                    log.warning("ignored LINE command without webhookEventId")
+                    continue
                 try:
-                    accepted = guard.accept(event_id)
+                    accepted = guard.accept(
+                        event_id,
+                        enforce_rate_limit=(command != "stop"),
+                    )
                 except Exception:
                     log.exception("failed to persist LINE webhook event")
                     self.send_error(503)
                     return
                 if accepted:
-                    accepted_events.append(event)
+                    accepted_commands.append(command)
                 else:
                     log.warning("ignored duplicate or rate-limited LINE event id=%s", event_id)
-            payload = {**payload, "events": accepted_events}
-            commands = extract_commands(payload, cfg.line_control_user_id)
+            immediate_results = []
+            remaining_commands = []
+            for command in accepted_commands:
+                if command == "stop":
+                    immediate_results.append(execute_command(command))
+                else:
+                    remaining_commands.append(command)
             self.send_response(200)
             self.end_headers()
-            for command in commands:
+            for result in immediate_results:
+                threading.Thread(
+                    target=lambda message=result: notifier.send(message),
+                    name="line-stop-result",
+                    daemon=True,
+                ).start()
+            for command in remaining_commands:
                 threading.Thread(
                     target=lambda cmd=command: notifier.send(execute_command(cmd)),
                     name="line-command",
@@ -207,13 +238,17 @@ def run() -> None:
 
     logging.basicConfig(level=cfg.log_level, format="%(asctime)s %(levelname)s %(message)s")
     notifier = LineNotifier(cfg.line_channel_access_token, cfg.line_control_user_id)
-    event_store = Store(cfg.database_url)
+    event_store = Store(
+        cfg.database_url, cfg.estimated_exchange_fee_rate,
+        cfg.estimated_fx_cost_rate, cfg.tax_rate,
+    )
     server = ThreadingHTTPServer(
         (cfg.line_controller_host, cfg.line_controller_port),
         make_handler(cfg, notifier, event_store),
     )
     server.timeout = 1
     running = True
+    watchdog_alert = ""
 
     def stop(*_):
         nonlocal running
@@ -228,6 +263,24 @@ def run() -> None:
             logging.info("LINE controller listening on %s:%s", cfg.line_controller_host, cfg.line_controller_port)
             while running and not STOP_PATH.exists():
                 server.handle_request()
+                alert = ""
+                if BOT_EXPECTED_PATH.exists():
+                    bot_pid = control._pid()
+                    if not control._is_running(bot_pid):
+                        alert = "CRITICAL: TradingBot stopped unexpectedly"
+                    else:
+                        try:
+                            heartbeat_age = time.time() - BOT_HEARTBEAT_PATH.stat().st_mtime
+                        except FileNotFoundError:
+                            heartbeat_age = float("inf")
+                        if heartbeat_age > cfg.watchdog_stale_seconds:
+                            alert = (
+                                f"CRITICAL: TradingBot heartbeat is stale "
+                                f"({heartbeat_age:.0f} seconds)"
+                            )
+                if alert and alert != watchdog_alert:
+                    notifier.send(alert)
+                watchdog_alert = alert
         finally:
             server.server_close()
             PID_PATH.unlink(missing_ok=True)

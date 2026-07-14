@@ -14,7 +14,14 @@ CREATE TABLE dbo.trades(
   status VARCHAR(32) NOT NULL,
   broker_exec_id NVARCHAR(128) NULL,
   commission DECIMAL(20,6) NOT NULL CONSTRAINT DF_trades_commission DEFAULT 0,
-  realized_pnl DECIMAL(20,6) NULL
+  realized_pnl DECIMAL(20,6) NULL,
+  gross_profit DECIMAL(20,6) NULL,
+  allocated_commission DECIMAL(20,6) NULL,
+  exchange_fee DECIMAL(20,6) NULL,
+  fx_cost DECIMAL(20,6) NULL,
+  estimated_tax DECIMAL(20,6) NULL,
+  net_profit DECIMAL(20,6) NULL,
+  purpose NVARCHAR(32) NOT NULL CONSTRAINT DF_trades_purpose DEFAULT 'strategy'
 );
 GO
 IF COL_LENGTH('dbo.trades', 'broker_exec_id') IS NULL
@@ -26,6 +33,22 @@ IF COL_LENGTH('dbo.trades', 'commission') IS NULL
 GO
 IF COL_LENGTH('dbo.trades', 'realized_pnl') IS NULL
   ALTER TABLE dbo.trades ADD realized_pnl DECIMAL(20,6) NULL;
+GO
+IF COL_LENGTH('dbo.trades', 'gross_profit') IS NULL
+  ALTER TABLE dbo.trades ADD gross_profit DECIMAL(20,6) NULL;
+IF COL_LENGTH('dbo.trades', 'allocated_commission') IS NULL
+  ALTER TABLE dbo.trades ADD allocated_commission DECIMAL(20,6) NULL;
+IF COL_LENGTH('dbo.trades', 'exchange_fee') IS NULL
+  ALTER TABLE dbo.trades ADD exchange_fee DECIMAL(20,6) NULL;
+IF COL_LENGTH('dbo.trades', 'fx_cost') IS NULL
+  ALTER TABLE dbo.trades ADD fx_cost DECIMAL(20,6) NULL;
+IF COL_LENGTH('dbo.trades', 'estimated_tax') IS NULL
+  ALTER TABLE dbo.trades ADD estimated_tax DECIMAL(20,6) NULL;
+IF COL_LENGTH('dbo.trades', 'net_profit') IS NULL
+  ALTER TABLE dbo.trades ADD net_profit DECIMAL(20,6) NULL;
+IF COL_LENGTH('dbo.trades', 'purpose') IS NULL
+  ALTER TABLE dbo.trades ADD purpose NVARCHAR(32) NOT NULL
+  CONSTRAINT DF_trades_purpose DEFAULT 'strategy' WITH VALUES;
 GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='UX_trades_broker_exec_id')
   CREATE UNIQUE INDEX UX_trades_broker_exec_id ON dbo.trades(broker_exec_id)

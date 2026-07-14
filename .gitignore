@@ -2,6 +2,9 @@
 .trading_bot.lock
 .trading_bot.pid
 .trading_bot.stop
+.trading_bot.expected
+.trading_bot.heartbeat
+.trading_bot.live-arm
 trading-bot.log
 .line_controller.lock
 .line_controller.pid

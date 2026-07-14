@@ -63,6 +63,14 @@ def test_webhook_guard_can_persist_replay_ids_across_processes():
     assert not WebhookGuard(persistent_claim=claim).accept("persisted-1", now=2)
 
 
+def test_stop_command_can_bypass_rate_limit_but_not_replay_guard():
+    guard = WebhookGuard(limit=1)
+
+    assert guard.accept("status-1", now=1)
+    assert guard.accept("stop-1", now=2, enforce_rate_limit=False)
+    assert not guard.accept("stop-1", now=3, enforce_rate_limit=False)
+
+
 def test_plain_start_cannot_start_live(monkeypatch):
     monkeypatch.setattr(
         line_controller,
@@ -71,6 +79,7 @@ def test_plain_start_cannot_start_live(monkeypatch):
     )
     called = []
     monkeypatch.setattr(line_controller.control, "start", lambda: called.append(True) or 0)
+    monkeypatch.setattr(line_controller.control, "consume_live_arm", lambda: True)
 
     assert "ปฏิเสธ" in line_controller.execute_command("start")
     assert called == []
