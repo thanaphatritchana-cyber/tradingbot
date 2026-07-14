@@ -4,7 +4,7 @@ pandas==2.2.3
 pydantic==2.9.2
 pydantic-settings==2.6.1
 python-dotenv==1.2.2
-yfinance==0.2.54
+yfinance==1.5.1
 alpaca-py==0.35.0
 ib_async==2.1.0
 pytest==9.0.3
