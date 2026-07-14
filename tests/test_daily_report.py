@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+import pytest
 
 from trading_bot.main import _latest_reportable_date
 from trading_bot.storage import summarize_trades
@@ -72,7 +73,37 @@ def test_summary_deducts_buy_and_sell_commissions():
     assert result.daily_losses == 1
 
 
-def test_default_minimum_probability_is_ninety_percent():
+def test_summary_uses_auditable_prices_and_commissions_not_opaque_broker_pnl():
+    rows = [
+        (datetime(2026, 7, 13, tzinfo=timezone.utc), "AAPL", "buy", 1, 100, 1, None),
+        (datetime(2026, 7, 13, 1, tzinfo=timezone.utc), "AAPL", "sell", 1, 110, 1, 7.5),
+    ]
+
+    result = summarize_trades(rows, date(2026, 7, 13), "Asia/Bangkok")
+
+    assert result.daily_profit == 8
+
+
+def test_default_minimum_probability_is_seventy_percent():
     from trading_bot.config import Settings
 
-    assert Settings(_env_file=None).min_win_probability == 0.90
+    assert Settings(_env_file=None).min_win_probability == 0.70
+
+
+def test_summary_separates_gross_cost_tax_and_net():
+    rows = [
+        (datetime(2026, 7, 13, tzinfo=timezone.utc), "AAPL", "buy", 1, 100, .50, None),
+        (datetime(2026, 7, 13, 1, tzinfo=timezone.utc), "AAPL", "sell", 1, 105, .50, None),
+    ]
+
+    result = summarize_trades(
+        rows, date(2026, 7, 13), "Asia/Bangkok",
+        exchange_fee_rate=.001, fx_cost_rate=.002, tax_rate=.10,
+    )
+
+    assert result.daily_gross_profit == pytest.approx(5)
+    assert result.daily_commission == pytest.approx(1)
+    assert result.daily_exchange_fee == pytest.approx(.205)
+    assert result.daily_fx_cost == pytest.approx(.410)
+    assert result.daily_estimated_tax == pytest.approx(.3385)
+    assert result.daily_profit == pytest.approx(3.0465)

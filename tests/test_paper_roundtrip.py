@@ -9,7 +9,7 @@ def settings(**changes):
         ibkr_port=7497,
         ibkr_read_only=False,
         kill_switch=True,
-        max_order_notional=1000,
+        max_order_notional=30,
     )
     values.update(changes)
     return Settings(_env_file=None, **values)

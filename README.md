@@ -1,5 +1,23 @@
 # Trading Bot (paper-first)
 
+## Current $200 risk profile
+
+New BUY orders use AI Confidence sizing: 70-79% uses 5% of the portfolio,
+80-89% uses 10%, 90-95% uses 15%, and above 95% uses 20%. Every tier is
+still capped by `MAX_ORDER_NOTIONAL=50`, and quantities are rounded down to
+whole shares so the cap is never exceeded.
+
+The active profile uses a $200 portfolio, at most $50 per order, at most three
+concurrent positions/$150 aggregate exposure, a 2% initial stop loss, a 10%
+take profit, a 1.5% trailing stop, a 2% daily loss limit (currently $4), and at
+most ten BUY orders per day.
+Account DailyPnL is monitored during the wait loop; when the limit is reached
+during market hours, protective orders are cancelled with confirmation and
+the remaining configured long positions are flattened before the bot stops.
+IBKR TWS stock orders in this bot are whole-share orders; if one share costs
+more than the confidence budget, no order is sent and LINE receives one
+`ORDER SIZE BLOCKED` alert per symbol/budget/day.
+
 บอทวิเคราะห์หุ้นเป็นรอบ ส่งคำสั่งซื้อ และแจ้ง LINE Messaging API โดยเก็บรายการซื้อขายและสถานะใน Microsoft SQL Server ซึ่งจัดการผ่าน SSMS ได้
 
 ## เริ่มต้น
@@ -24,7 +42,7 @@
 
 ตรวจการเชื่อมต่อและรายการ Position แบบ read-only ได้ด้วย `python -m trading_bot.check_ibkr` คำสั่งนี้จะไม่ส่งออเดอร์
 
-พอร์ตมาตรฐานคือ TWS Paper `7497`, TWS Live `7496`, Gateway Paper `4002` และ Gateway Live `4001` หากบอทรันใน Docker แต่ TWS รันบนเครื่อง host ให้ใช้ `IBKR_HOST=host.docker.internal` และเพิ่ม IP ที่จำเป็นใน Trusted IPs ของ TWS
+พอร์ตมาตรฐานคือ TWS Paper `7497`, TWS Live `7496`, Gateway Paper `4002` และ Gateway Live `4001` ระบบแบบผู้ใช้คนเดียวนี้บังคับ `IBKR_HOST=127.0.0.1` เท่านั้น จึงไม่เปิดรับ TWS API จากเครื่องอื่นหรือ Docker network
 
 `IBKR_ACCOUNT` เว้นว่างได้เมื่อ login จัดการเพียงบัญชีเดียว หากมีหลายบัญชีต้องระบุ account ID ให้ชัดเจน ระบบจะปฏิเสธการเริ่มทำงานหากตั้ง Paper/Live ไม่ตรงกับพอร์ตมาตรฐาน หรือระบุชื่อ `BROKER` ที่ไม่รองรับ
 
@@ -52,7 +70,13 @@ LINE กำหนดให้ Webhook URL เป็น public HTTPS จึงต
 
 ## เกณฑ์ 70%
 
-ระบบจับคู่สถานะ EMA/RSI ปัจจุบันกับอดีต วัดว่าราคาหลัง 5 แท่งสูงขึ้นกี่ครั้ง และใช้ขอบล่าง Wilson ที่ระดับความเชื่อมั่น 90% เป็นค่าประเมินแบบอนุรักษนิยม ต้องมีตัวอย่างอย่างน้อย `MIN_SIGNAL_SAMPLES` และค่าขอบล่างไม่น้อยกว่า `MIN_WIN_PROBABILITY` จึงซื้อ ผลย้อนหลังไม่รับประกันผลอนาคต
+ระบบจับคู่สถานะ EMA/RSI ปัจจุบันกับอดีต แล้ววัดว่า Take Profit 10% ถึงก่อน Stop Loss 2% ภายใน `SIGNAL_HORIZON_BARS` หรือไม่ หากราคาแตะทั้งสองระดับในแท่งเดียวกันจะนับ Stop Loss ก่อนเพื่อไม่ให้ผลทดสอบดีเกินจริง นอกจากนี้ Volume ล่าสุดต้องไม่น้อยกว่าค่าเฉลี่ย 20 แท่งและ ATR ต้องอยู่ในช่วงที่กำหนด Confidence ใช้ขอบล่าง Wilson 90% ก่อนส่ง BUY ระบบเรียก IBKR What-If และเผื่อ Commission เพิ่ม 10% แล้วหัก Commission, Exchange Fee, FX Cost และภาษีโดยประมาณ ระบบจะซื้อเฉพาะเมื่อ Expected Net Profit มากกว่า `MIN_NET_PROFIT_COST_MULTIPLE` เท่าของ Trading Cost เท่านั้น ผลย้อนหลังไม่รับประกันผลอนาคต
+
+อัตราภาษีเลือกได้เฉพาะ `TAX_RATE=0`, `0.10`, `0.15` หรือ `0.20` ค่า Exchange Fee และ FX Cost เป็นค่าประมาณแบบ round-trip ต่อมูลค่าเงินลงทุน ส่วนคอมมิชชันจริงหลัง fill มาจาก IBKR และระบบจะคำนวณ Net Profit ใหม่เมื่อรายงานค่าคอมมิชชันมาถึง
+ก่อน Live ต้องยืนยันด้วย `LIVE_TAX_CONFIRM=I_CONFIRMED_TAX_RATE` และ `LIVE_COST_MODEL_CONFIRM=I_VERIFIED_TRADING_COSTS` หลังตรวจอัตราภาษีของผู้ใช้และต้นทุนจริงจาก IBKR แล้วเท่านั้น
+
+`PAPER_TEST_SYMBOL` ใช้เฉพาะการทดสอบ Paper round-trip หนึ่งหุ้น และไม่เปลี่ยนรายการ `SYMBOLS` ที่กลยุทธ์ติดตาม การทดสอบนี้ตั้งใจซื้อและขายทันทีเพื่อตรวจ Fill, native bracket, SQL และ LINE เท่านั้น จึงอาจแสดงผลขาดทุนจำลองจากค่าคอมมิชชัน
+Execution จากการทดสอบนี้ถูกบันทึกเป็น `connectivity_test` และจะไม่ถูกนับรวมในกำไร, Win Rate, จำนวนไม้ หรือจำนวนวันของ Paper track record สำหรับปลดล็อก Live
 
 ## ใช้เงินจริง
 
@@ -82,3 +106,15 @@ Live mode requires `python -m trading_bot.preflight --mode live` to pass with a 
 New entries are blocked by `MAX_ORDER_NOTIONAL`, `MAX_TOTAL_EXPOSURE`, `MAX_DAILY_LOSS`, `MAX_ORDERS_PER_DAY`, `MAX_CONSECUTIVE_LOSSES`, and `MAX_CONSECUTIVE_CYCLE_ERRORS`. On restart, an existing position must have matching Stop Loss and Take Profit orders; a failed repair stops the bot.
 
 LINE command `เริ่ม` starts Paper mode only. Live mode requires the exact command `เริ่ม live ยืนยัน`. The `หยุด` command stops the program, while protective orders already accepted by IBKR remain active for the open position.
+
+Live preflight expires after `LIVE_PREFLIGHT_VALID_HOURS` and is invalidated by
+strategy, sizing, risk, market-data, or protection-setting changes. Before a
+LINE Live start, run `python -m trading_bot.control arm-live` locally; the arm
+token expires after ten minutes and can be used once. The controller monitors
+the bot heartbeat and sends a CRITICAL LINE alert when an expected process dies
+or becomes stale.
+
+Run `scripts/disable-tws-public-inbound.ps1` from an Administrator PowerShell
+once to disable Windows Public-profile inbound rules created for `tws.exe`.
+The bot requires `IBKR_HOST` to be loopback-only, so disabling those rules does
+not prevent local TWS API access.

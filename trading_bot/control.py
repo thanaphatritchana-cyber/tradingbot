@@ -2,6 +2,7 @@
 
 import argparse
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import subprocess
 import sys
@@ -19,6 +20,9 @@ ROOT = Path(__file__).resolve().parent.parent
 PID_PATH = ROOT / ".trading_bot.pid"
 STOP_PATH = ROOT / ".trading_bot.stop"
 LOG_PATH = ROOT / "trading-bot.log"
+EXPECTED_PATH = ROOT / ".trading_bot.expected"
+HEARTBEAT_PATH = ROOT / ".trading_bot.heartbeat"
+LIVE_ARM_PATH = ROOT / ".trading_bot.live-arm"
 CONTROLLER_PID_PATH = ROOT / ".line_controller.pid"
 CONTROLLER_STOP_PATH = ROOT / ".line_controller.stop"
 CONTROLLER_LOG_PATH = ROOT / "line-controller.log"
@@ -71,6 +75,8 @@ def _start_service(module: str, pid_path: Path, stop_path: Path, log_path: Path,
         return 0
     pid_path.unlink(missing_ok=True)
     stop_path.unlink(missing_ok=True)
+    if module == "trading_bot.main":
+        EXPECTED_PATH.write_text("running", encoding="ascii")
     creationflags = 0
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
@@ -86,6 +92,8 @@ def _start_service(module: str, pid_path: Path, stop_path: Path, log_path: Path,
         )
     for _ in range(30):
         if process.poll() is not None:
+            if module == "trading_bot.main":
+                EXPECTED_PATH.unlink(missing_ok=True)
             print(f"{label} failed to start (exit {process.returncode}); check {log_path}")
             return 1
         service_pid = _read_pid(pid_path)
@@ -95,6 +103,8 @@ def _start_service(module: str, pid_path: Path, stop_path: Path, log_path: Path,
             return 0
         time.sleep(0.1)
     print(f"{label} did not become ready; check {log_path}")
+    if module == "trading_bot.main":
+        EXPECTED_PATH.unlink(missing_ok=True)
     return 1
 
 
@@ -121,7 +131,44 @@ def _stop_service(pid_path: Path, stop_path: Path, log_path: Path, label: str, t
 
 
 def stop(timeout: int = 45) -> int:
-    return _stop_service(PID_PATH, STOP_PATH, LOG_PATH, "TradingBot", timeout)
+    result = _stop_service(PID_PATH, STOP_PATH, LOG_PATH, "TradingBot", timeout)
+    if result == 0:
+        EXPECTED_PATH.unlink(missing_ok=True)
+        HEARTBEAT_PATH.unlink(missing_ok=True)
+    return result
+
+
+def request_stop() -> int:
+    """Persist a graceful stop request without waiting for process shutdown."""
+    pid = _read_pid(PID_PATH)
+    if not _is_running(pid):
+        PID_PATH.unlink(missing_ok=True)
+        STOP_PATH.unlink(missing_ok=True)
+        EXPECTED_PATH.unlink(missing_ok=True)
+        HEARTBEAT_PATH.unlink(missing_ok=True)
+        return 0
+    STOP_PATH.write_text("stop", encoding="ascii")
+    EXPECTED_PATH.unlink(missing_ok=True)
+    return 0
+
+
+def arm_live(minutes: int = 10) -> int:
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    LIVE_ARM_PATH.write_text(expires_at.isoformat(), encoding="ascii")
+    print(f"Live LINE start armed until {expires_at.isoformat()}")
+    return 0
+
+
+def consume_live_arm() -> bool:
+    try:
+        expires_at = datetime.fromisoformat(
+            LIVE_ARM_PATH.read_text(encoding="ascii").strip()
+        )
+    except (FileNotFoundError, ValueError):
+        return False
+    finally:
+        LIVE_ARM_PATH.unlink(missing_ok=True)
+    return datetime.now(timezone.utc) <= expires_at
 
 
 def controller_start() -> int:
@@ -238,6 +285,7 @@ def run() -> int:
             "controller-start", "controller-stop", "controller-status",
             "tunnel-start", "tunnel-stop", "tunnel-status",
             "remote-start", "remote-stop", "remote-status",
+            "arm-live",
         ),
     )
     args = parser.parse_args()
@@ -267,6 +315,8 @@ def run() -> int:
     if args.command == "remote-status":
         remote_status()
         return 0
+    if args.command == "arm-live":
+        return arm_live()
     status()
     return 0
 
