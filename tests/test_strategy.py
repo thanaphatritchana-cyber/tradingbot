@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from trading_bot.strategy import analyze
+from trading_bot.strategy import analyze, profit_target_pct
 
 
 def test_short_history_holds():
@@ -14,3 +14,22 @@ def test_probability_is_bounded():
     result = analyze(pd.DataFrame({"Close": close}), 10)
     assert 0 <= result.probability <= 1
 
+
+def test_profit_target_is_clamped_to_three_and_ten_percent():
+    low_volatility = pd.DataFrame({
+        "High": np.full(20, 100.1),
+        "Low": np.full(20, 99.9),
+        "Close": np.full(20, 100.0),
+    })
+    high_volatility = pd.DataFrame({
+        "High": np.full(20, 120.0),
+        "Low": np.full(20, 80.0),
+        "Close": np.full(20, 100.0),
+    })
+
+    assert profit_target_pct(low_volatility) == 0.03
+    assert profit_target_pct(high_volatility) == 0.10
+
+
+def test_profit_target_falls_back_to_minimum_without_ohlc():
+    assert profit_target_pct(pd.DataFrame({"Close": [100.0]})) == 0.03

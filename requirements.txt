@@ -6,5 +6,7 @@ pydantic-settings==2.6.1
 python-dotenv==1.0.1
 yfinance==0.2.54
 alpaca-py==0.35.0
+ib_async==2.1.0
 pytest==8.3.3
 pyodbc==5.2.0
+tzdata==2025.2

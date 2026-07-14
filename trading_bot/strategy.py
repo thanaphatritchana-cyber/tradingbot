@@ -13,6 +13,34 @@ class Signal:
     reason: str
 
 
+def profit_target_pct(
+    frame: pd.DataFrame,
+    minimum: float = 0.03,
+    maximum: float = 0.10,
+    atr_multiplier: float = 3.0,
+    period: int = 14,
+) -> float:
+    """Choose a volatility-based profit target, clamped to configured bounds."""
+    if not 0 < minimum <= maximum:
+        raise ValueError("profit target requires 0 < minimum <= maximum")
+    required = {"High", "Low", "Close"}
+    if frame.empty or not required.issubset(frame.columns):
+        return minimum
+    high = frame["High"].astype(float)
+    low = frame["Low"].astype(float)
+    close = frame["Close"].astype(float)
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [high - low, (high - previous_close).abs(), (low - previous_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    atr = true_range.rolling(period, min_periods=period).mean().iloc[-1]
+    latest = close.iloc[-1]
+    if not np.isfinite(atr) or not np.isfinite(latest) or latest <= 0:
+        return minimum
+    return float(np.clip((atr / latest) * atr_multiplier, minimum, maximum))
+
+
 def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
@@ -31,7 +59,11 @@ def _wilson_lower(wins: int, total: int, z: float = 1.645) -> float:
 
 
 def analyze(frame: pd.DataFrame, min_samples: int, horizon: int = 5) -> Signal:
+    if frame.empty or "Close" not in frame:
+        return Signal("hold", 0, 0, 0, "no market data")
     close = frame["Close"].astype(float).dropna()
+    if close.empty:
+        return Signal("hold", 0, 0, 0, "no market data")
     if len(close) < 100:
         return Signal("hold", 0, 0, float(close.iloc[-1]), "insufficient history")
     df = pd.DataFrame(index=close.index)
@@ -53,4 +85,3 @@ def analyze(frame: pd.DataFrame, min_samples: int, horizon: int = 5) -> Signal:
     if len(candidates) < min_samples:
         return Signal("hold", probability, len(candidates), float(latest.close), "insufficient comparable samples")
     return Signal(side, probability, len(candidates), float(latest.close), reason)
-
