@@ -8,5 +8,5 @@ yfinance==0.2.54
 alpaca-py==0.35.0
 ib_async==2.1.0
 pytest==9.0.3
-pyodbc==5.2.0
+pyodbc==5.3.0
 tzdata==2025.2
